@@ -1,7 +1,3 @@
-import net.openhft.hashing.LongHashFunction;
-
-import java.util.Random;
-
 public class HLL {
     byte[] registers;
     int p;
