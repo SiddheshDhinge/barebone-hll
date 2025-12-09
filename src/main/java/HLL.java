@@ -12,6 +12,14 @@ public class HLL {
     static final byte BIT_MASK_4 = 15;
     static final byte BIT_MASK_6 = 63;
     static final byte BIT_MASK_8 = (byte) 255;
+    static final double POW_2_32 = Math.pow(2, 32);
+    static double[] PRE_POW_2_K = new double[256];
+    static final int DT_WIDTH = 8;
+    static {
+        for(int i = 0; i< 256; i++) {
+            PRE_POW_2_K[i] = Math.pow(2, -i);
+        }
+    }
 
     HLL(int p, int r) {
         assert(p >= 4 && p <= 30);
@@ -36,51 +44,55 @@ public class HLL {
     // read r bits of the registers from a specified bit location and return it as a byte.
     byte readRegister(int index) {
         byte value = 0;
-
-//        for(int i=0; i < r; i++) {
-//            int byteIndex = (index + i) / 8;
-//            int bitIndex = (index + i) % 8;
-//            byte bit = (byte) ((registers[byteIndex] >>> (7 - bitIndex)) & 1);
-//            value = (byte) ((value << 1) | bit);
-//        }
-
         int end = index + r - 1;
-        int firstByte = index / 8;
-        int secondByte = end / 8;
+        int firstByteIndex = index >>> 3;
+        int secondByteIndex = end >>> 3;
+        int lastBitOffset = 7 - (end & 7);
 
-        int secondBitOffset = 7 - (end % 8);
-
-        if(firstByte == secondByte) {
+        if (firstByteIndex == secondByteIndex) {
             // bits packed in single byte
             byte MASK = (r == 4) ? BIT_MASK_4 : ((r == 6) ? BIT_MASK_6 : BIT_MASK_8);
-            value = (byte) ((this.registers[firstByte] >>> secondBitOffset) & MASK);
-        }
-        else {
+            value = (byte) ((this.registers[firstByteIndex] >>> lastBitOffset) & MASK);
+        } else {
             // bits packed in two bytes
-            int firstBitOffset = 7 - (index % 8);
+            int firstBitOffset = 7 - (index & 7);
             // as we only support r = 6 which can be misaligned no need to check other things
-            byte MASK_1 = (firstBitOffset == 2) ? BIT_MASK_2 : BIT_MASK_4;
-            byte MASK_2 = (secondBitOffset == 6) ? BIT_MASK_2 : BIT_MASK_4;
-            value = (byte) ((this.registers[firstByte] & MASK_1) << ((end % 8) + 1));
-            value = (byte) (value | (this.registers[secondByte] >>> secondBitOffset) & MASK_2);
+            byte MASK_1 = (firstBitOffset == 1) ? BIT_MASK_2 : BIT_MASK_4;
+            byte MASK_2 = (lastBitOffset == 6) ? BIT_MASK_2 : BIT_MASK_4;
+            value = (byte) ((this.registers[firstByteIndex] & MASK_1) << ((end & 7) + 1));
+            value = (byte) (value | (this.registers[secondByteIndex] >>> lastBitOffset) & MASK_2);
         }
         return value;
     }
 
     // write the rightmost r bits of given byte value to a specified bit location in the registers.
     void writeRegister(byte value, int index) {
-        for(int i= r-1; i>=0; i--) {
-            int byteIndex = (index + i) / 8;
-            int bitIndex = (index + i) % 8;
-            byte bit = (byte) (value & 1);
-            registers[byteIndex] &= (byte) ~(1 << (7 - bitIndex));
-            registers[byteIndex] |= (byte) (bit << (7 - bitIndex));
-            value = (byte) (value >>> 1);
+        int end = index + r - 1;
+        int firstByteIndex = index >>> 3;
+        int secondsByteIndex = end >>> 3;
+        int lastBitOffset = 7 - (end & 7);
+
+        if(firstByteIndex == secondsByteIndex) {
+            // bits packed in same byte
+            byte MASK = (r == 4) ? BIT_MASK_4 : ((r == 6) ? BIT_MASK_6 : BIT_MASK_8);
+            this.registers[firstByteIndex] &= (byte) ~(MASK << lastBitOffset);
+            this.registers[firstByteIndex] |= (byte) (value << lastBitOffset);
+        }
+        else {
+            // bits packed in two bytes
+            int firstBitOffset = 7 - (index & 7);
+            byte MASK_1 = (firstBitOffset == 1) ? BIT_MASK_2 : BIT_MASK_4;
+            byte MASK_2 = (lastBitOffset == 6) ? BIT_MASK_2 : BIT_MASK_4;
+
+            this.registers[firstByteIndex] &= (byte) ~MASK_1;
+            this.registers[firstByteIndex] |= (byte) (value >>> ((end & 7) + 1));
+            this.registers[secondsByteIndex] &= (byte) ~(MASK_2 << lastBitOffset);
+            this.registers[secondsByteIndex] |= (byte) (value << lastBitOffset);
         }
     }
 
     void add(long value) {
-        byte cnt = 0;
+        int cnt = 0;
 
         int bucket = (int) (value >>> (64 - p));
         value = (value << p) >>> p;
@@ -97,9 +109,9 @@ public class HLL {
 
         int bucketBitPosition = bucket * r;
 
-        byte prev = readRegister(bucketBitPosition);
+        int prev = readRegister(bucketBitPosition) & 0xFF;
         if(prev < cnt)
-            writeRegister(cnt, bucketBitPosition);
+            writeRegister((byte) cnt, bucketBitPosition);
     }
 
     void merge(HLL other) {
@@ -107,41 +119,32 @@ public class HLL {
 
         int totalBuckets = (m * 8) / r;
         for(int i=0; i<totalBuckets; i++) {
-            byte a = this.readRegister(i * r);
-            byte b = other.readRegister(i * r);
+            int a = this.readRegister(i * r) & 0xFF;
+            int b = other.readRegister(i * r) & 0xFF;
             if(a < b) {
-                this.writeRegister(b, i * r);
+                this.writeRegister((byte) b, i * r);
             }
         }
     }
 
     long estimate() {
-        double M = (double) (m * 8) / r;
+        double M = (double) (m * DT_WIDTH) / r;
         double sum = 0;
         double zeroRegisters = 0;
         for(int i=0; i<M; i++) {
-            double k = readRegister(i * r);
+            int k = readRegister(i * r) & 0xFF;
             if(k == 0)
                 zeroRegisters++;
-            sum = sum + Math.pow(2, -k);
+            sum = sum + PRE_POW_2_K[k];
         }
         double alphaM = getAlphaM((int) M);
-
-        if(M == 16)
-            alphaM = 0.673;
-        else if (M == 32) {
-            alphaM = 0.697;
-        } else if (M == 64) {
-            alphaM = 0.709;
-        }
-
         double rawEstimate = alphaM * M * M * (1 / sum);
 //        System.err.println(rawEstimate);
 
         if(rawEstimate <= (5.0 * M / 2.0) && zeroRegisters > 0) {
             rawEstimate = M * Math.log(M / zeroRegisters);
-        } else if(rawEstimate > ((1.0 / 30.0) * Math.pow(2, 32))) {
-            rawEstimate = -Math.pow(2, 32) * Math.log(1 - rawEstimate / Math.pow(2, 32));
+        } else if(rawEstimate > ((1.0 / 30.0) * POW_2_32)) {
+            rawEstimate = - POW_2_32 * Math.log(1 - rawEstimate / POW_2_32);
         }
 
         return (long) rawEstimate;
@@ -177,12 +180,12 @@ public class HLL {
     }
 
     void debugInfo() {
-        int M = (m * 8) / r;
+        int M = (m * DT_WIDTH) / r;
         System.err.println("p=" + p + " r=" + r + " bytes=" + m + " M=" + M);
         int max = (1 << r) - 1;
         int[] hist = new int[max + 1];
         for (int i = 0; i < M; i++) {
-            int v = readRegister(i * r);
+            int v = readRegister(i * r) & 0xFF;
             hist[v]++;
         }
         for (int i = 0; i <= max; i++)

@@ -5,9 +5,9 @@ import java.util.Random;
 public class Main {
     public static void main(String[] args) {
         LongHashFunction hash = LongHashFunction.xx();
-        int P = 12, R = 4;
+        int P = 12, R = 6;
 
-        HLL[] arr = new HLL[10000];
+        HLL[] arr = new HLL[50000];
         Random rand = new Random();
 
         HLL a = new HLL(P, R);
@@ -24,6 +24,10 @@ public class Main {
             a.merge(arr[i]);
         }
 
+        for(int i=0 ; i<arr.length; i++) {
+            arr[i].estimate();
+        }
+
         System.out.println("uniques: " + (uniques + 1));
         System.out.println("estimate: " + a.estimate());
 
@@ -37,5 +41,11 @@ public class Main {
         HLL newHLL = HLL.deserialize(ser);
 
         System.out.println("estimate desered: " + newHLL.estimate());
+
+        try {
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // restore interrupt flag
+        }
     }
 }
